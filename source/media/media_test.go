@@ -2,6 +2,7 @@ package media
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -211,5 +212,33 @@ func TestSafeFilename(t *testing.T) {
 	}
 	if strings.ContainsAny(safeFilename("x\x00y.ttf", 1), "\x00") {
 		t.Error("control char kept")
+	}
+}
+
+func TestAudioReleaseHints(t *testing.T) {
+	und := func(i int) AudioStream { return AudioStream{Index: i, Codec: "aac", Language: "und", Channels: 2} }
+	for _, c := range []struct {
+		release string
+		streams []AudioStream
+		want    string
+	}{
+		{"[Group] Show - 01 [1080p][Dual Audio]", []AudioStream{und(1), und(2)}, "[jpn/release eng/release]"},
+		{"[Group] Show - 01 [JPN+ENG]", []AudioStream{und(1), und(2)}, "[jpn/release eng/release]"},
+		{"[Group] Show - 01 [Dual-Audio]", []AudioStream{{Index: 1, Codec: "aac", Language: "eng", Channels: 2}, und(2)}, "[eng/tag jpn/release]"},
+		{"[Yameii] Show - 01 [English Dub]", []AudioStream{und(1)}, "[eng/release]"},
+		{"[SubsPlease] Show - 01 (1080p)", []AudioStream{und(1), und(2)}, "[jpn/order und/none]"},
+		{"[Group] Dubai Story - 01", []AudioStream{und(1)}, "[jpn/order]"},
+	} {
+		am, err := MapAudioFor(&StreamMap{Audio: c.streams}, c.release)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, tr := range am.Tracks {
+			got = append(got, tr.Lang+"/"+tr.LangFrom)
+		}
+		if fmt.Sprint(got) != c.want {
+			t.Errorf("%q: %v, want %s", c.release, got, c.want)
+		}
 	}
 }

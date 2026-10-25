@@ -232,6 +232,13 @@ func intParam(w http.ResponseWriter, q url.Values, key string, def, lo, hi int) 
 
 // acceptingJobs refuses submissions with 503 while /ready fails (Stage 10).
 func (s *Server) acceptingJobs(w http.ResponseWriter, r *http.Request) bool {
+	if s.Controls != nil && s.Controls.Storage.Full() {
+		g := s.Controls.Storage
+		writeJSON(w, http.StatusInsufficientStorage, map[string]any{
+			"error": fmt.Sprintf("storage limit reached: %.1f of %.1f GB used — delete episodes or raise MAX_STORAGE_GB",
+				float64(g.Used())/(1<<30), float64(g.Limit)/(1<<30))})
+		return false
+	}
 	if s.Ready == nil {
 		return true
 	}

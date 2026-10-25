@@ -209,7 +209,7 @@ func TestRank(t *testing.T) {
 		mk("[Dead] Show - 05 1080p", "nyaa", "medium", 0, 'A'),
 	})
 	cands[5].Date = now.Add(-30 * 24 * time.Hour)
-	got := rank(cands, Prefs{Resolution: "1080"}, false)
+	got := rank(cands, Prefs{Resolution: "1080"}, false, false)
 	order := func() []string {
 		var o []string
 		for _, c := range got {
@@ -231,11 +231,11 @@ func TestRank(t *testing.T) {
 	if got[4].Pickable || got[4].Why == "" || got[5].Pickable {
 		t.Error("batch/dead marked pickable")
 	}
-	got = rank(cands, Prefs{Resolution: "1080"}, true)
+	got = rank(cands, Prefs{Resolution: "1080"}, true, false)
 	if got[0].Source != "yameii" {
 		t.Errorf("dub preference ignored: %s", got[0].Title)
 	}
-	got = rank(cands, Prefs{Resolution: "1080", PreferredGroups: []string{"ToonsHub"}}, false)
+	got = rank(cands, Prefs{Resolution: "1080", PreferredGroups: []string{"ToonsHub"}}, false, false)
 	if got[0].Source != "toonshub" {
 		t.Errorf("preferred group ignored: %s", got[0].Title)
 	}
@@ -311,6 +311,54 @@ func TestMostlyForeignNameRejected(t *testing.T) {
 	} {
 		if got := classifyResult(c.title, c.ctx); got != c.want {
 			t.Errorf("classify(%q) = %q, want %q", c.title, got, c.want)
+		}
+	}
+}
+
+func TestCodecOf(t *testing.T) {
+	for title, want := range map[string]string{
+		"[Erai-raws] Show - 04 [1080p NF WEB-DL AVC AAC]": "H.264",
+		"[SubsPlease] Show - 04 (1080p) [x264]":           "H.264",
+		"[Group] Show - 04 [1080p HEVC 10bit]":            "HEVC",
+		"[Group] Show - 04 [1080p x265]":                  "HEVC",
+		"[Group] Show - 04 [1080p AV1 Opus]":              "AV1",
+		"[Group] Savvy Show - 04 [1080p]":                 "",
+	} {
+		if got := codecOf(title); got != want {
+			t.Errorf("codecOf(%q) = %q, want %q", title, got, want)
+		}
+	}
+}
+
+func TestShortTitleNeedsWholeTitle(t *testing.T) {
+	op := searchContext(Query{Titles: []string{"ONE PIECE", "ONE PIECE", "ワンピース", "OP"}, Episode: 2}, ModeSingle)
+	bleach := searchContext(Query{Titles: []string{"BLEACH", "ブリーチ"}, Episode: 2}, ModeSingle)
+	for _, c := range []struct {
+		ctx   *matchContext
+		title string
+		want  byte
+	}{
+		{op, "[SubsPlease] Horimiya - Piece - 02 (1080p) [2BBA3969].mkv", 0},
+		{op, "[Erai-raws] One Piece - 02 [1080p][Multiple Subtitle]", 'A'},
+		{op, "One.Piece.S01E02.1080p.NF.WEB-DL.mkv", 'A'},
+		{op, "One Piece S00E02 One Piece Heroines 1080p CR WEB-DL DUAL AAC2.0 H.264-VARYG (Dual-Audio, Multi-Subs)", 0},
+		{bleach, "[Group] Bleach - 02 [BD 1080p]", 'A'},
+		{bleach, "[Group] Bleach Kashin-tan - 02 [1080p]", 0},
+	} {
+		if got := classifyResult(c.title, c.ctx); got != c.want {
+			t.Errorf("classify(%q) = %q, want %q", c.title, got, c.want)
+		}
+	}
+}
+
+func TestShortTitleExtraWords(t *testing.T) {
+	op := searchContext(Query{Titles: []string{"ONE PIECE", "ワンピース", "Wan Pisu"}, Episode: 1}, ModeSingle)
+	for _, title := range []string{
+		"[Yameii] ONE PIECE HEROINES - S01E01 [English Dub] [CR WEB-DL 1080p H264 AAC]",
+		"[Xera] Koisuru One Piece - 01 (1080p) [386D151F]",
+	} {
+		if got := classifyResult(title, op); got != 0 {
+			t.Errorf("classify(%q) = %q, want rejected", title, got)
 		}
 	}
 }

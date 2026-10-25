@@ -371,3 +371,80 @@ func TestResumeIndex(t *testing.T) {
 		}
 	}
 }
+
+// A user cancel interrupts a running stage at once, records "cancelled by
+// user" without a later checkpoint overwriting it, and the episode can be
+// retried.
+func TestCancelRunningEpisode(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.submit("jc", "show", "E01", "magnet:?xt=urn:btih:"+strings.Repeat("ef", 20)) // never resolves
+	claimCtx, stop := context.WithCancel(ctx)
+	pool := NewPool(h.pipe, h.store, 1, quiet())
+	if err := pool.Start(claimCtx, ctx); err != nil {
+		t.Fatal(err)
+	}
+	pool.Wake()
+	defer func() { stop(); pool.Wait() }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ep, _ := h.store.GetEpisode(ctx, "jc", "E01")
+		if ep != nil && ep.Status == models.EpResolving {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never started resolving: %+v", ep)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	start := time.Now()
+	if n := h.pipe.CancelRunning("jc"); n != 1 {
+		t.Fatalf("CancelRunning stopped %d runs, want 1", n)
+	}
+	eps, finished, err := h.store.CancelJob(ctx, "jc")
+	if err != nil || len(eps) != 1 || !finished {
+		t.Fatalf("CancelJob %v %v %v", eps, finished, err)
+	}
+	// The run must be gone quickly (resolve timeout is 15s otherwise).
+	for {
+		h.pipe.runMu.Lock()
+		n := len(h.pipe.running)
+		h.pipe.runMu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Since(start) > 3*time.Second {
+			t.Fatal("run still active 3s after cancel")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond) // give a late checkpoint the chance to misbehave
+	ep, _ := h.store.GetEpisode(ctx, "jc", "E01")
+	if ep.Status != models.EpFailed || ep.Error != "cancelled by user" {
+		t.Fatalf("after cancel: %s %q", ep.Status, ep.Error)
+	}
+	// The API fires the callback after a cancel that finishes the job.
+	h.pipe.NotifyFinished("jc")
+	select {
+	case cb := <-h.callbacks:
+		if cb.JobID != "jc" || cb.Status != "failed" || cb.Episodes[0].Error != "cancelled by user" {
+			t.Errorf("callback %+v", cb)
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("no callback after cancel")
+	}
+
+	stop() // no worker should pick up the retry in this test
+	pool.Wait()
+	retried, err := h.store.RetryEpisodes(ctx, "jc", nil)
+	if err != nil || len(retried) != 1 {
+		t.Fatalf("retry %v %v", retried, err)
+	}
+	ep, _ = h.store.GetEpisode(ctx, "jc", "E01")
+	job, _ := h.store.GetJob(ctx, "jc")
+	if ep.Status != models.EpQueued || ep.Error != "" || job.Status != models.JobProcessing {
+		t.Fatalf("after retry: ep %s %q job %s", ep.Status, ep.Error, job.Status)
+	}
+}

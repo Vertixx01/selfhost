@@ -12,6 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"torclient/source/intro"
@@ -30,8 +33,9 @@ type Config struct {
 	Download               torrent.DownloadOptions
 	FingerprintMinEpisodes int
 	MaxConcurrentTorrents  int
-	MaxFFmpegWorkers       int // CPU (x264) transcode slots; 0 with GPUOnly
-	GPUWorkers             int // NVENC transcode slots; 0 = no GPU
+	Storage                *utils.StorageGuard // MAX_STORAGE_GB; nil = no limit
+	MaxFFmpegWorkers       int                 // CPU (x264) transcode slots; 0 with GPUOnly
+	GPUWorkers             int                 // NVENC transcode slots; 0 = no GPU
 }
 
 type Pipeline struct {
@@ -49,6 +53,9 @@ type Pipeline struct {
 	ffmpegSlots  chan struct{} // MAX_FFMPEG_WORKERS: CPU transcodes (nil = none)
 	gpuSlots     chan struct{} // GPU_WORKERS: NVENC transcodes (nil = none)
 	series       *seriesRunner
+
+	runMu   sync.Mutex
+	running map[string]context.CancelCauseFunc // "job/ep" → cancel of its Run
 }
 
 func New(cfg Config, store *utils.JobStore, fonts *utils.FontCache, resolver *resolvers.Resolver,
@@ -60,6 +67,7 @@ func New(cfg Config, store *utils.JobStore, fonts *utils.FontCache, resolver *re
 		ffmpegSlots:  slots(cfg.MaxFFmpegWorkers),
 		gpuSlots:     slots(cfg.GPUWorkers),
 		series:       newSeriesRunner(),
+		running:      map[string]context.CancelCauseFunc{},
 	}
 }
 
@@ -82,6 +90,34 @@ func (p *Pipeline) pathsFor(job *models.Job, ep models.Episode) paths {
 	}
 }
 
+// NotifyFinished fires the job callback (used after a user cancel finishes a job).
+func (p *Pipeline) NotifyFinished(jobID string) {
+	if p.notifier != nil {
+		p.notifier.JobFinished(jobID)
+	}
+}
+
+// ErrCancelled is the cause given to a Run that the user cancelled.
+var ErrCancelled = errors.New("cancelled by user")
+
+// CancelRunning stops the in-flight work (download, ffmpeg) of the given
+// episodes of a job; an empty epIDs means every episode of the job. It only
+// interrupts work — the caller records the episodes' status.
+func (p *Pipeline) CancelRunning(jobID string, epIDs ...string) int {
+	p.runMu.Lock()
+	defer p.runMu.Unlock()
+	n := 0
+	for key, cancel := range p.running {
+		job, ep, _ := strings.Cut(key, "/")
+		if job != jobID || (len(epIDs) > 0 && !slices.Contains(epIDs, ep)) {
+			continue
+		}
+		cancel(ErrCancelled)
+		n++
+	}
+	return n
+}
+
 // stage order; resolving and downloading are one unit (a download can't
 // resume without the torrent's metadata).
 var stageOrder = []models.EpisodeStatus{
@@ -93,6 +129,18 @@ var stageOrder = []models.EpisodeStatus{
 // from its last checkpoint on the next start.
 func (p *Pipeline) Run(ctx context.Context, ep models.Episode) {
 	log := p.log.With("job_id", ep.JobID, "ep_id", ep.EpID)
+	ctx, cancel := context.WithCancelCause(ctx)
+	key := ep.JobID + "/" + ep.EpID
+	p.runMu.Lock()
+	p.running[key] = cancel
+	p.runMu.Unlock()
+	defer func() {
+		p.runMu.Lock()
+		delete(p.running, key)
+		p.runMu.Unlock()
+		cancel(nil)
+	}()
+
 	err := func() (err error) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -102,6 +150,10 @@ func (p *Pipeline) Run(ctx context.Context, ep models.Episode) {
 		}()
 		return p.process(ctx, ep, log)
 	}()
+	if errors.Is(context.Cause(ctx), ErrCancelled) {
+		log.Info("cancelled by user") // the API already recorded it as failed
+		return
+	}
 	if ctx.Err() != nil {
 		log.Info("stopped; will resume from checkpoint", "status", ep.Status)
 		return
@@ -239,6 +291,11 @@ func (p *Pipeline) download(ctx context.Context, job *models.Job, ep models.Epis
 		res.Handle.Drop()
 		return err
 	}
+	// MAX_STORAGE_GB: the download plus its transcode output must fit.
+	if err := p.cfg.Storage.Reserve(ctx, 2*res.File.Length, job.AnimeID); err != nil {
+		res.Handle.Drop()
+		return err
+	}
 	// §7 "Disk full": need room for the download and the transcode output.
 	if free, err := utils.FreeBytes(p.cfg.Layout.WorkRoot); err == nil && free < uint64(2*res.File.Length) {
 		res.Handle.Drop()
@@ -271,7 +328,7 @@ func (p *Pipeline) analyze(ctx context.Context, job *models.Job, ep models.Episo
 	for _, w := range sm.Warnings {
 		log.Warn("analysis", "warning", w)
 	}
-	am, err := media.MapAudio(sm)
+	am, err := media.MapAudioFor(sm, ep.Title)
 	if err != nil {
 		return err
 	}

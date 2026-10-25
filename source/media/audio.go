@@ -37,10 +37,17 @@ type SkippedTrack struct {
 var (
 	commentaryRe = regexp.MustCompile(`(?i)commentary`)
 	downmixRe    = regexp.MustCompile(`(?i)downmix|stereo`)
+	dualAudioRe  = regexp.MustCompile(`(?i)(dual|multi)[ ._-]?audio|(^|[^a-z])jpn?[ ._]?[+&/][ ._]?eng?([^a-z]|$)`)
+	dubRe        = regexp.MustCompile(`(?i)(^|[^a-z])(eng(lish)?[ ._-]?)?dub(bed)?([^a-z]|$)`)
 )
 
 // MapAudio decides language, keep/skip, copy/re-encode, and the default track.
-func MapAudio(sm *StreamMap) (*AudioMap, error) {
+func MapAudio(sm *StreamMap) (*AudioMap, error) { return MapAudioFor(sm, "") }
+
+// MapAudioFor is MapAudio with the release name as a hint for untagged
+// tracks: "Dual Audio" means Japanese + English, "English Dub" with a single
+// track means English.
+func MapAudioFor(sm *StreamMap, release string) (*AudioMap, error) {
 	if len(sm.Audio) == 0 {
 		return nil, ErrNoAudio
 	}
@@ -70,6 +77,7 @@ func MapAudio(sm *StreamMap) (*AudioMap, error) {
 		}
 		kept = append(kept, t)
 	}
+	langHints(kept, release)
 
 	// Same language twice: drop a derived stereo downmix when a track with
 	// more channels exists; otherwise keep both (a different mix).
@@ -124,4 +132,32 @@ func titleOf(sm *StreamMap, index int) string {
 		}
 	}
 	return ""
+}
+
+// langHints relabels tracks the stream gave no language for ("order" or
+// "none") from the release name.
+func langHints(tracks []AudioTrack, release string) {
+	guessed := func(t AudioTrack) bool { return t.LangFrom == "order" || t.LangFrom == "none" }
+	switch {
+	case dualAudioRe.MatchString(release):
+		have := map[string]bool{}
+		for _, t := range tracks {
+			if !guessed(t) {
+				have[t.Lang] = true
+			}
+		}
+		for i := range tracks {
+			if !guessed(tracks[i]) {
+				continue
+			}
+			for _, l := range []string{"jpn", "eng"} {
+				if !have[l] {
+					tracks[i].Lang, tracks[i].LangFrom, have[l] = l, "release", true
+					break
+				}
+			}
+		}
+	case dubRe.MatchString(release) && len(tracks) == 1 && guessed(tracks[0]):
+		tracks[0].Lang, tracks[0].LangFrom = "eng", "release"
+	}
 }

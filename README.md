@@ -20,7 +20,8 @@ Design notes, measurements and the full plan are in [PROJECT.MD](PROJECT.MD).
 - **HLS output** — 1080p + 720p (never upscaled) and per-language audio renditions, segments cut at identical points in every rendition and on OP/ED boundaries, AES-128 encrypted, master playlist with measured bandwidth.
 - **Encoders** — CPU (x264) by default; NVIDIA NVENC and a GPU + CPU hybrid scheduler when a GPU is present.
 - **Robust pipeline** — SQLite checkpoints per stage, crash recovery, worker pool, graceful shutdown, completion callbacks, work-dir cleanup, `/ready` health checks.
-- **Web UI** — request an anime by AniList ID, watch progress, play episodes (hls.js) with quality/audio/subtitle selection and "Skip intro".
+- **Web UI** — request an anime by AniList ID, with search options (resolution, preferred groups, excluded words, sources, dub, prefer H.264). *Search* lists every torrent found per episode (group, resolution, codec, size, seeders, age, sources, match quality) so you can choose; *Quick download* auto-picks. Watch progress, cancel/retry/remove jobs, delete episodes, see storage use, and play episodes (hls.js) with quality/audio/subtitle selection and "Skip intro".
+- **Day-to-day controls** — cancel running jobs, retry failed episodes, remove finished jobs, delete packaged episodes, and an optional storage cap (`MAX_STORAGE_GB`) that refuses new downloads or auto-deletes the oldest episodes (`STORAGE_AUTO_DELETE`).
 
 ## Requirements
 
@@ -76,13 +77,19 @@ All settings are environment variables (or `.env`); see [.env.example](.env.exam
 | `ENCODER`, `NVENC_PRESET`, `NVENC_CQ_BD/WEB` | Encoder selection and GPU quality |
 | `DISCOVERY_SOURCES`, `DISCOVERY_RESOLUTION`, `DISCOVERY_PREFERRED_GROUPS`, `DISCOVERY_EXCLUDE` | AniList discovery |
 | `WORK_TTL_HOURS`, `FAILED_WORK_TTL_HOURS` | When work dirs are cleaned |
+| `MAX_STORAGE_GB`, `STORAGE_AUTO_DELETE` | Cap on work + output disk use (0 = none); at the cap, refuse new downloads or delete the oldest packaged episodes |
 
 ## API
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/anilist/{anilist_id}/episodes` | Find releases and queue a job: `{"job_id","episodes":[1,2,3],"callback_url"?,"anime_id"?,"dub"?}` |
-| `GET` | `/api/anilist/{anilist_id}/search?episode=N` | Ranked candidates and the pick (no download) |
+| `POST` | `/api/anilist/{anilist_id}/episodes` | Find releases and queue a job: `{"job_id","episodes":[1,2,3],"callback_url"?,"anime_id"?}` plus optional search options `resolution`, `groups`, `exclude`, `sources`, `dub`, `prefer_h264`, and `picks: {"2": {"magnet","title","source"}}` to use a chosen torrent instead of the auto-pick |
+| `GET` | `/api/anilist/{anilist_id}/search?episode=N` | Ranked candidates and the pick (no download). Options: `resolution=1080\|720\|any`, `groups=a,b`, `exclude=x265,dub`, `sources=nyaa,seadex`, `dub=1`, `h264=1` |
+| `POST` | `/job/{job_id}/cancel` | Stop running work; unfinished episodes become failed ("cancelled by user") |
+| `POST` | `/job/{job_id}/retry` | Re-queue failed episodes; body `{"episodes":["ep2"]}` optional |
+| `DELETE` | `/job/{job_id}` | Remove a finished job and its work files (packaged episodes stay) |
+| `DELETE` | `/api/anime/{anime_id}/episodes/{ep_id}` | Delete a packaged episode (output, key, fingerprints) |
+| `GET` | `/api/storage` | Bytes used, the cap, auto-delete, free disk |
 | `POST` | `/job` | Queue a job from magnets: `{"job_id","anime_id","title","episodes":[{"ep_id","magnet_url",...}]}` |
 | `POST` | `/api/anime/{anime_id}/episodes` | Append episodes to an existing anime |
 | `GET` | `/job/{job_id}` | Job + per-episode status, progress, size, output path |

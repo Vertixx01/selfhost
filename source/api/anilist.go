@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"torclient/source/discovery"
@@ -61,7 +62,16 @@ func (s *Server) handleAnilistSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "episode is required for a series")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.Discovery.Search(r.Context(), show, ep, r.URL.Query().Get("dub") == "1"))
+	q := r.URL.Query()
+	opts := searchOptions{
+		Resolution: q.Get("resolution"), Groups: splitCSV(q.Get("groups")), Exclude: splitCSV(q.Get("exclude")),
+		Sources: splitCSV(q.Get("sources")), Dub: q.Get("dub") == "1", PreferH264: q.Get("h264") == "1",
+	}
+	if err := opts.validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Discovery.SearchWith(r.Context(), show, ep, opts.discovery()))
 }
 
 type anilistEpisodesRequest struct {
@@ -70,7 +80,60 @@ type anilistEpisodesRequest struct {
 	Episodes    []int  `json:"episodes"` // omit for a movie
 	CallbackURL string `json:"callback_url"`
 	Priority    int    `json:"priority"`
-	Dub         bool   `json:"dub"` // prefer English-dub releases
+	searchOptions
+	// Picks: releases the user chose (from /search) per episode number
+	// ("3"); those episodes skip auto-selection.
+	Picks map[string]pickedRelease `json:"picks"`
+}
+
+type pickedRelease struct {
+	Magnet string `json:"magnet"`
+	Title  string `json:"title"`
+	Source string `json:"source"`
+}
+
+// searchOptions are the per-request search knobs shared by /search (query
+// parameters) and /episodes (JSON body).
+type searchOptions struct {
+	Resolution string   `json:"resolution"` // "1080", "720", "any"; "" = server default
+	Groups     []string `json:"groups"`     // preferred release groups, in order
+	Exclude    []string `json:"exclude"`    // words a title must not contain
+	Sources    []string `json:"sources"`    // subset of the configured sources
+	Dub        bool     `json:"dub"`        // prefer English-dub releases
+	PreferH264 bool     `json:"prefer_h264"`
+}
+
+func (o searchOptions) validate() error {
+	switch o.Resolution {
+	case "", "any", "2160", "1080", "720", "576", "480":
+	default:
+		return fmt.Errorf("resolution must be any, 2160, 1080, 720, 576 or 480")
+	}
+	if len(o.Groups) > 20 || len(o.Exclude) > 50 {
+		return fmt.Errorf("too many groups or exclusions")
+	}
+	return nil
+}
+
+func (o searchOptions) discovery() discovery.SearchOptions {
+	d := discovery.SearchOptions{Resolution: o.Resolution, Exclusions: o.Exclude, PreferDub: o.Dub, PreferH264: o.PreferH264}
+	if len(o.Groups) > 0 {
+		d.PreferredGroups = o.Groups
+	}
+	if len(o.Sources) > 0 {
+		d.Sources = o.Sources
+	}
+	return d
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 type episodeDiscovery struct {
@@ -137,7 +200,17 @@ func (s *Server) handleAnilistEpisodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := s.discoverEpisodes(r.Context(), show, eps, movie, req.Dub)
+	if err := req.searchOptions.validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	for k, p := range req.Picks {
+		if !strings.HasPrefix(p.Magnet, magnetPrefix) {
+			writeError(w, http.StatusBadRequest, "picks["+k+"].magnet must start with "+magnetPrefix)
+			return
+		}
+	}
+	results := s.discoverEpisodes(r.Context(), show, eps, movie, req.searchOptions.discovery(), req.Picks)
 	var newEps []models.NewEpisodeRequest
 	for _, d := range results {
 		if d.Picked == nil {
@@ -180,7 +253,7 @@ func (s *Server) handleAnilistEpisodes(w http.ResponseWriter, r *http.Request) {
 }
 
 // discoverEpisodes searches episodes three at a time (nyaa.si rate limits).
-func (s *Server) discoverEpisodes(ctx context.Context, show *discovery.Show, eps []int, movie, dub bool) []episodeDiscovery {
+func (s *Server) discoverEpisodes(ctx context.Context, show *discovery.Show, eps []int, movie bool, opts discovery.SearchOptions, picks map[string]pickedRelease) []episodeDiscovery {
 	out := make([]episodeDiscovery, len(eps))
 	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
@@ -194,7 +267,16 @@ func (s *Server) discoverEpisodes(ctx context.Context, show *discovery.Show, eps
 			if movie {
 				d.EpID = "movie"
 			}
-			res := s.Discovery.Search(ctx, show, ep, dub)
+			if p, ok := picks[strconv.Itoa(ep)]; ok {
+				title := p.Title
+				if title == "" {
+					title = d.EpID
+				}
+				d.Picked = &discovery.Candidate{Result: discovery.Result{Title: title, Link: p.Magnet, Source: p.Source}, Sources: []string{p.Source}}
+				out[i] = d
+				return
+			}
+			res := s.Discovery.SearchWith(ctx, show, ep, opts)
 			d.Picked, d.Errors = res.Picked, res.Errors
 			if d.Picked == nil {
 				d.Error = discovery.ErrNoRelease.Error()

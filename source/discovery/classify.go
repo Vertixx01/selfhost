@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -174,10 +175,18 @@ func classifyResult(title string, ctx *matchContext) byte {
 	if !resultMatchesShow(title, ctx.showTokens, ctx.minHits) {
 		return 0
 	}
-	if len(ctx.showTokens) == 1 && nameIntroducesForeignWord(title, ctx.showTokens) {
+	// One significant word is a weak signal ("ONE PIECE" is just {piece}),
+	// so the name may then add no word outside the show's titles: not
+	// "Horimiya - Piece", "Koisuru One Piece" or "One Piece Heroines".
+	// anitorrent checks this only when all titles together have one token.
+	if (len(ctx.showTokens) == 1 || ctx.minHits == 1) && nameIntroducesForeignWord(title, ctx.showTokens) {
 		return 0
 	}
 	if namesSiblingSeason(title, ctx.foreignTokens) || nameMostlyForeign(title, ctx.showTokens) {
+		return 0
+	}
+	// S00Exx is a special; AniList lists those as separate entries.
+	if ctx.mode == ModeSingle && specialRe.MatchString(title) {
 		return 0
 	}
 	if len(ctx.seasonMarks) > 0 && !resultMatchesShow(title, ctx.seasonMarks, 1) && nameIntroducesForeignWord(title, ctx.showTokens) {
@@ -503,3 +512,5 @@ func atoi(s string) int {
 	}
 	return n
 }
+
+var specialRe = regexp.MustCompile(`(?i)(^|[^a-z0-9])S0{1,2}E\d{1,4}([^0-9]|$)`)

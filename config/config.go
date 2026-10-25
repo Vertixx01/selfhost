@@ -89,7 +89,9 @@ type Config struct {
 	WorkTTLHours           int
 	FailedWorkTTLHours     int
 	CleanupIntervalMinutes int
-	MinFreeDiskGB          int // /ready warns below this
+	MinFreeDiskGB          int  // /ready warns below this
+	MaxStorageGB           int  // cap on work + output; 0 = none
+	StorageAutoDelete      bool // make room by deleting the oldest episodes
 
 	// HTTP
 	ListenAddr string
@@ -170,6 +172,8 @@ func Load(envFile string) (*Config, error) {
 		FailedWorkTTLHours:     p.posInt("FAILED_WORK_TTL_HOURS", 72),
 		CleanupIntervalMinutes: p.posInt("CLEANUP_INTERVAL_MINUTES", 15),
 		MinFreeDiskGB:          p.posInt("MIN_FREE_DISK_GB", 10),
+		MaxStorageGB:           p.nonNegInt("MAX_STORAGE_GB", 0),
+		StorageAutoDelete:      p.boolean("STORAGE_AUTO_DELETE", false),
 
 		ListenAddr: p.str("LISTEN_ADDR", ":8080"),
 		ServeMedia: p.boolean("SERVE_MEDIA", false),

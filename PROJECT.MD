@@ -1494,18 +1494,28 @@ Observed, not bugs but worth knowing: untagged audio is labelled Japanese (the "
 
 **Web UI** (`SERVE_MEDIA=true`): `/` takes an AniList ID, first episode, count and a dub preference, calls `POST /api/anilist/{id}/episodes`, shows the picked release per episode and live per-episode progress, and links each finished episode to the player. The player (`/play/{anime}/{ep}`, hls.js with SRI) has quality/audio/subtitle pickers and "Skip intro"/"Skip outro".
 
+### Controls, search options, matching fixes (2026-10-25)
+
+- **Controls:** `POST /job/{id}/cancel` (interrupts running stages through a per-episode `context.CancelCauseFunc`, marks unfinished episodes failed "cancelled by user"), `POST /job/{id}/retry` (all failed, or `{"episodes":[...]}`), `DELETE /job/{id}` (finished jobs only; releases fonts, removes work dir), `DELETE /api/anime/{anime}/episodes/{ep}` (output + key + fingerprints; job rows become failed "output deleted" so Retry re-downloads).
+- **Storage cap:** `MAX_STORAGE_GB` over work + output. Before each download the pipeline reserves 2× the file size; at the cap it fails the episode, or with `STORAGE_AUTO_DELETE=true` deletes the oldest packaged episodes (never the series being downloaded, never in-flight ones). New submissions get 507 while full. `GET /api/storage` reports usage.
+- **Search options:** resolution (or any), preferred groups, excluded words, source subset, prefer dub, prefer H.264 — per request, on both the search and the queue endpoint. Candidates now carry group, resolution, codec, batch flag, match quality, and why they can't be auto-picked. `picks` on the queue endpoint uses a chosen torrent per episode.
+- **UI:** Search → per-episode candidate tables with the auto-pick preselected → Download selected; Quick download keeps auto-pick. Cancel/Retry/Remove per job, Retry per failed episode, Delete per library episode, storage line.
+- **Audio labels:** untagged tracks take their language from the release name — "Dual Audio"/"JPN+ENG" → Japanese + English, "English Dub" with one track → English (`lang_from: "release"`).
+- **Matching:** a show with a one-word title ("ONE PIECE" is just {piece}; "one" is a stopword) now rejects any release whose show name adds a word outside the AniList titles ("Horimiya - Piece", "Koisuru One Piece", "One Piece Heroines"); `S00Exx` specials are rejected for episode searches. Codec detection fixed (its `\b` had been saved as backspace bytes).
+
 ### Phase 7 — Polish
 - [ ] **Infohash dedup:** look up `episodes.infohash`, recreate the existing output tree at the new path with per-file hardlinks
+- [ ] **Batch torrents:** pick the episode's file inside a multi-episode torrent; let episodes share one torrent
 - [x] **Cache-hit fast path:** done in Phase 6 (pipeline start)
 - [x] **Graceful shutdown:** done in Phase 6
-- [ ] **Retry endpoint:** `POST /job/{id}/retry` to requeue failed episodes from their checkpoint
+- [x] **Retry endpoint:** `POST /job/{id}/retry` to requeue failed episodes from their checkpoint
 - [ ] **Font orphan scan:** compare `fonts/` with `font_cache` periodically
 - [ ] **Prometheus metrics:** `/metrics` endpoint, counters for jobs/stages/failures
 - [ ] **Structured logging audit:** ensure every stage logs begin/end/error with job_id
 - [ ] **Error handling review:** verify every edge case from §7 is covered
 - [ ] **Integration tests:** end-to-end test with small torrent
 - [ ] **Docker finalize:** Ubuntu image with jellyfin-ffmpeg + mkvtoolnix, non-root user
-- [ ] **README:** setup instructions, API docs, architecture overview
+- [x] **README:** setup instructions, API docs, architecture overview
 
 ---
 

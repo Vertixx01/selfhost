@@ -24,6 +24,7 @@ type Server struct {
 	OnJobCreated  func()                // wakes the worker pool
 	Discovery     *discovery.Discoverer // AniList endpoints; nil = off
 	MediaDir      string                // GET /media, /play serve this (OUTPUT_DIR); "" = off
+	Controls      *Controls             // cancel/retry/delete; nil = off
 }
 
 func NewServer(db *sql.DB, store *utils.JobStore, log *slog.Logger) *Server {
@@ -41,6 +42,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.HandleFunc("GET /keys/{anime_id}/{file}", s.handleKey)
 	mux.HandleFunc("GET /api/anilist/{anilist_id}/search", s.handleAnilistSearch)
+	mux.HandleFunc("POST /job/{job_id}/cancel", s.handleCancelJob)
+	mux.HandleFunc("GET /api/storage", s.handleStorage)
+	mux.HandleFunc("POST /job/{job_id}/retry", s.handleRetryJob)
+	mux.HandleFunc("DELETE /job/{job_id}", s.handleDeleteJob)
+	mux.HandleFunc("DELETE /api/anime/{anime_id}/episodes/{ep_id}", s.handleDeleteEpisode)
 	mux.HandleFunc("GET /media/{path...}", s.handleMedia)
 	mux.HandleFunc("GET /play", s.handlePlayIndex)
 	mux.HandleFunc("GET /{$}", s.handlePlayIndex) // home page

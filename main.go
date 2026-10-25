@@ -113,6 +113,14 @@ func main() {
 	}
 
 	cpuWorkers, gpuWorkers := encoderSlots(workCtx, cfg, logger)
+	// Limit 0 only measures usage (for /api/storage); it never refuses work.
+	storage := &utils.StorageGuard{
+		Limit: int64(cfg.MaxStorageGB) << 30, AutoDelete: cfg.StorageAutoDelete,
+		Dirs: []string{cfg.WorkDir, cfg.OutputDir}, Store: store, Layout: layout,
+	}
+	if cfg.MaxStorageGB > 0 {
+		logger.Info("storage limit", "gb", cfg.MaxStorageGB, "auto_delete", cfg.StorageAutoDelete)
+	}
 
 	notifier := pipeline.NewNotifier(store, logger)
 	pipe := pipeline.New(pipeline.Config{
@@ -127,6 +135,7 @@ func main() {
 		FingerprintMinEpisodes: cfg.FingerprintMinEpisodes,
 		MaxConcurrentTorrents:  cfg.MaxConcurrentTorrents,
 		MaxFFmpegWorkers:       cpuWorkers,
+		Storage:                storage,
 		GPUWorkers:             gpuWorkers,
 	}, store, fonts,
 		resolvers.New(engine, resolvers.Options{
@@ -158,6 +167,10 @@ func main() {
 		apiServer.KeyDir, apiServer.KeyCORSOrigin = cfg.KeyDir, cfg.KeyCORSOrigin
 	}
 	apiServer.OnJobCreated = pool.Wake
+	apiServer.Controls = &api.Controls{
+		CancelRunning: pipe.CancelRunning, JobFinished: pipe.NotifyFinished,
+		Fonts: fonts, Layout: layout, Storage: storage,
+	}
 	if cfg.ServeMedia {
 		apiServer.MediaDir = cfg.OutputDir
 	}

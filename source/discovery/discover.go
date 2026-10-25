@@ -58,11 +58,14 @@ func SelectSources(all []Source, names []string) ([]Source, error) {
 // Candidate is a ranked result, merged across sources by infohash.
 type Candidate struct {
 	Result
-	Sources  []string `json:"sources"`
-	Batch    bool     `json:"batch"`
-	Match    string   `json:"match"` // exact | batch | weak
-	Pickable bool     `json:"pickable"`
-	Why      string   `json:"why,omitempty"` // why it can't be auto-picked
+	Group      string   `json:"group,omitempty"`      // [SubsPlease] → SubsPlease
+	Resolution int      `json:"resolution,omitempty"` // 1080, 720, … (0 = unknown)
+	Codec      string   `json:"codec,omitempty"`      // H.264 | HEVC | AV1 | ""
+	Sources    []string `json:"sources"`
+	Batch      bool     `json:"batch"`
+	Match      string   `json:"match"` // exact | batch | weak
+	Pickable   bool     `json:"pickable"`
+	Why        string   `json:"why,omitempty"` // why it can't be auto-picked
 }
 
 type SearchResult struct {
@@ -79,14 +82,51 @@ var ErrNoRelease = errors.New("no suitable release found")
 
 // Search looks up one episode (or the movie, episode < 0 / single-episode
 // shows) across every source, merges and ranks the results, and picks one.
+// SearchOptions override the configured preferences for one search.
+type SearchOptions struct {
+	Resolution      string   // "" = configured default, "any" = no preference
+	PreferredGroups []string // nil = configured default
+	Exclusions      []string // added to the configured ones
+	Sources         []string // nil = every configured source
+	PreferDub       bool
+	PreferH264      bool // rank H.264 above HEVC/AV1 (cheaper to decode on a small VPS)
+}
+
 func (d *Discoverer) Search(ctx context.Context, show *Show, episode int, preferDub bool) *SearchResult {
+	return d.SearchWith(ctx, show, episode, SearchOptions{PreferDub: preferDub})
+}
+
+// SearchWith is Search with per-request options.
+func (d *Discoverer) SearchWith(ctx context.Context, show *Show, episode int, o SearchOptions) *SearchResult {
+	prefs := d.Prefs
+	switch o.Resolution {
+	case "":
+	case "any":
+		prefs.Resolution = ""
+	default:
+		prefs.Resolution = o.Resolution
+	}
+	if o.PreferredGroups != nil {
+		prefs.PreferredGroups = o.PreferredGroups
+	}
+	prefs.Exclusions = append(append([]string(nil), d.Prefs.Exclusions...), o.Exclusions...)
+	sources := d.Sources
+	if o.Sources != nil {
+		sources = nil
+		for _, s := range d.Sources {
+			if contains(o.Sources, s.Name()) {
+				sources = append(sources, s)
+			}
+		}
+	}
+
 	mode := ModeSingle
 	if show.Episodes == 1 || show.Format == "MOVIE" {
 		mode, episode = ModeMovie, -1
 	}
 	q := Query{
 		AnilistID: show.ID, Titles: show.Titles, Episode: episode, EpisodeCount: show.Episodes,
-		Resolution: d.Prefs.Resolution, Exclusions: d.Prefs.Exclusions,
+		Resolution: prefs.Resolution, Exclusions: prefs.Exclusions,
 	}
 	if mode == ModeMovie {
 		q = d.AniList.withShowFacts(ctx, q)
@@ -98,7 +138,7 @@ func (d *Discoverer) Search(ctx context.Context, show *Show, episode int, prefer
 	var mu sync.Mutex
 	var all []Result
 	var wg sync.WaitGroup
-	for _, src := range d.Sources {
+	for _, src := range sources {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -122,7 +162,7 @@ func (d *Discoverer) Search(ctx context.Context, show *Show, episode int, prefer
 	}
 	wg.Wait()
 
-	res.Candidates = rank(merge(all), d.Prefs, preferDub)
+	res.Candidates = rank(merge(all), prefs, o.PreferDub, o.PreferH264)
 	for i := range res.Candidates {
 		if res.Candidates[i].Pickable {
 			res.Picked = &res.Candidates[i]
@@ -206,10 +246,11 @@ const deadAfter = 7 * 24 * time.Hour
 //  5. accuracy (exact ID lookup > text match), SeaDex "best"
 //  6. trusted uploader, not a remake
 //  7. exact seeders, then newest
-func rank(cs []Candidate, p Prefs, preferDub bool) []Candidate {
+func rank(cs []Candidate, p Prefs, preferDub, preferH264 bool) []Candidate {
 	want := atoi(p.Resolution)
 	for i := range cs {
 		c := &cs[i]
+		c.Group, c.Resolution, c.Codec = groupOf(c.Title), resolutionOf(c.Title), codecOf(c.Title)
 		c.Batch = c.Type == "batch" || c.Tier == 'B'
 		c.Match = map[byte]string{'A': "exact", 'B': "batch"}[c.Tier]
 		if c.Match == "" {
@@ -268,6 +309,9 @@ func rank(cs []Candidate, p Prefs, preferDub bool) []Candidate {
 		if da, db := dubRank(a), dubRank(b); da != db {
 			return da < db
 		}
+		if preferH264 && (a.Codec == "H.264") != (b.Codec == "H.264") {
+			return a.Codec == "H.264"
+		}
 		if sa, sb := seedBucket(a), seedBucket(b); sa != sb {
 			return sa > sb
 		}
@@ -286,6 +330,32 @@ func rank(cs []Candidate, p Prefs, preferDub bool) []Candidate {
 		return a.Date.After(b.Date)
 	})
 	return cs
+}
+
+var (
+	groupRe = regexp.MustCompile(`^\s*\[([^\]]+)\]`)
+	hevcRe  = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(hevc|x265|h\.?265)(?:$|[^a-z0-9])`)
+	av1Re   = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])av1(?:$|[^a-z0-9])`)
+	avcRe   = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(avc|x264|h\.?264)(?:$|[^a-z0-9])`)
+)
+
+func groupOf(title string) string {
+	if m := groupRe.FindStringSubmatch(title); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+func codecOf(title string) string {
+	switch {
+	case hevcRe.MatchString(title):
+		return "HEVC"
+	case av1Re.MatchString(title):
+		return "AV1"
+	case avcRe.MatchString(title):
+		return "H.264"
+	}
+	return ""
 }
 
 // seedBucket: unknown seeder counts (SubsPlease/SeaDex only) sit in the middle.
