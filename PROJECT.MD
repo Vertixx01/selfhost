@@ -37,7 +37,7 @@
 | Tests | `go test ./...` — store, handlers, config, file selection, end-to-end torrent download from a local seeder, media analysis on a generated MKV with real ffmpeg, font cache, intro detection (synthetic + real ffmpeg), transcoding (real ffmpeg, incl. playback of the encrypted package), full pipeline end to end (seeder + ffmpeg + callback server), discovery (rules, fake sites, endpoints; live test opt-in). |
 | `Dockerfile`, `docker-compose.yml`, `README.md` | Not written yet (Phase 7). |
 | License | GPL-3.0 (`LICENSE`), because `source/discovery/` is ported from anitorrent — see `NOTICE`. |
-| Git | Private GitHub repo `Vertixx01/torClient`. `.env` is ignored; `.env.example` is the template. |
+| Git | Private GitHub repo `Vertixx01/selfhost`. `.env` is ignored; `.env.example` is the template. |
 
 **Next:** Phase 7 — Dockerfile + compose, auth in front of `/keys` and the UI, infohash dedup, retry/cancel endpoints, batch-torrent support, metrics.
 

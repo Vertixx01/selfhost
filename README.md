@@ -32,8 +32,8 @@ Design notes, measurements and the full plan are in [PROJECT.MD](PROJECT.MD).
 ## Quick start
 
 ```bash
-git clone https://github.com/Vertixx01/torClient.git
-cd torClient
+git clone https://github.com/Vertixx01/selfhost.git
+cd selfhost
 cp .env.example .env          # then edit: paths, HLS_KEY_URI_BASE, LISTEN_ADDR, ...
 CGO_ENABLED=0 go build -o torClient .
 ./torClient
