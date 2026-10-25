@@ -1,0 +1,18 @@
+torClient
+Copyright (C) 2026 torClient contributors
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version. See LICENSE.
+
+Third-party code
+----------------
+
+source/discovery/ is a Go port of anitorrent
+(https://github.com/anh9000/anitorrent), the Hayase torrent-source extension
+pack, licensed under GPL-3.0. Ported: src/lib/shared.js (title tokens,
+episode/season/batch matching, AniList prequel-chain episode offsets, result
+ranking), src/lib/aliases.js, and the AnimeTosho, SeaDex, SubsPlease, Nyaa,
+Yameii and ToonsHub sources. AnimeTosho lookups also use anitorrent's
+data/anilist-to-anidb.json mapping, fetched at runtime.
