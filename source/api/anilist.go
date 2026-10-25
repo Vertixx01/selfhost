@@ -90,6 +90,7 @@ type pickedRelease struct {
 	Magnet string `json:"magnet"`
 	Title  string `json:"title"`
 	Source string `json:"source"`
+	Batch  bool   `json:"batch"` // multi-episode torrent: download only this episode's file
 }
 
 // searchOptions are the per-request search knobs shared by /search (query
@@ -142,6 +143,8 @@ type episodeDiscovery struct {
 	Picked  *discovery.Candidate `json:"picked,omitempty"`
 	Error   string               `json:"error,omitempty"`
 	Errors  map[string]string    `json:"source_errors,omitempty"`
+	// FileEpisodes is set when Picked is a batch (see models.Episode).
+	FileEpisodes []int `json:"file_episodes,omitempty"`
 }
 
 // handleAnilistEpisodes serves POST /api/anilist/{anilist_id}/episodes: find
@@ -218,7 +221,7 @@ func (s *Server) handleAnilistEpisodes(w http.ResponseWriter, r *http.Request) {
 		}
 		newEps = append(newEps, models.NewEpisodeRequest{
 			EpID: d.EpID, Title: d.Picked.Title, MagnetURL: d.Picked.Link,
-			Priority: req.Priority, Provider: d.Picked.Source,
+			Priority: req.Priority, Provider: d.Picked.Source, FileEpisodes: d.FileEpisodes,
 		})
 	}
 	if len(newEps) == 0 {
@@ -272,12 +275,18 @@ func (s *Server) discoverEpisodes(ctx context.Context, show *discovery.Show, eps
 				if title == "" {
 					title = d.EpID
 				}
-				d.Picked = &discovery.Candidate{Result: discovery.Result{Title: title, Link: p.Magnet, Source: p.Source}, Sources: []string{p.Source}}
+				d.Picked = &discovery.Candidate{Result: discovery.Result{Title: title, Link: p.Magnet, Source: p.Source}, Sources: []string{p.Source}, Batch: p.Batch}
+				if p.Batch && !movie {
+					d.FileEpisodes = s.Discovery.EpisodeNumbers(ctx, show, ep)
+				}
 				out[i] = d
 				return
 			}
 			res := s.Discovery.SearchWith(ctx, show, ep, opts)
 			d.Picked, d.Errors = res.Picked, res.Errors
+			if d.Picked != nil && d.Picked.Batch {
+				d.FileEpisodes = res.FileEpisodes
+			}
 			if d.Picked == nil {
 				d.Error = discovery.ErrNoRelease.Error()
 				for _, c := range res.Candidates {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,11 @@ func (stubSource) Name() string { return "stub" }
 func (stubSource) Search(_ context.Context, q discovery.Query, mode discovery.Mode) ([]discovery.Result, error) {
 	if q.Episode == 13 {
 		return nil, nil
+	}
+	if q.Episode == 14 { // only a season batch covers it
+		hash := strings.Repeat("0", 38) + "bb"
+		return []discovery.Result{{Title: "[Grp] Show 01-24 [1080p]", Hash: hash, Link: "magnet:?xt=urn:btih:" + hash,
+			Accuracy: "high", Seeders: 80, HasSeeders: true, Date: time.Now(), Tier: 'B'}}, nil
 	}
 	ep := q.Episode
 	if mode == discovery.ModeMovie {
@@ -144,5 +150,38 @@ func TestAnilistEndpoints(t *testing.T) {
 	}
 	if code, _ := do(t, ts, "POST", "/api/anilist/2/episodes", `{"job_id":"x4","episodes":[3]}`); code != 400 {
 		t.Error("movie with episode 3 accepted")
+	}
+}
+
+func TestAnilistBatchEpisodes(t *testing.T) {
+	ts := newDiscoveryServer(t)
+	type job struct {
+		Job struct {
+			Episodes []struct {
+				EpID         string `json:"ep_id"`
+				FileEpisodes []int  `json:"file_episodes"`
+			}
+		}
+	}
+	// Auto-picked batch (episode 14) and a chosen batch (episode 7) record
+	// which file to take; a single-episode release (episode 2) doesn't.
+	code, body := do(t, ts, "POST", "/api/anilist/1/episodes", `{"job_id":"b-1","episodes":[2,7,14],
+		"picks":{"7":{"magnet":"magnet:?xt=urn:btih:`+strings.Repeat("0", 38)+`cc","title":"[Grp] Show 01-24","source":"nyaa","batch":true}}}`)
+	if code != 201 {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	var resp job
+	json.Unmarshal([]byte(body), &resp)
+	got := map[string][]int{}
+	for _, e := range resp.Job.Episodes {
+		got[e.EpID] = e.FileEpisodes
+	}
+	if len(got) != 3 || got["ep2"] != nil || !slices.Equal(got["ep7"], []int{7}) || !slices.Equal(got["ep14"], []int{14}) {
+		t.Errorf("file episodes %v", got)
+	}
+	// Stored, not just echoed.
+	code, body = do(t, ts, "GET", "/job/b-1", "")
+	if code != 200 || !strings.Contains(body, `"file_episodes":[14]`) {
+		t.Errorf("stored job: %d %s", code, body)
 	}
 }

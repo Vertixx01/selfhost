@@ -14,7 +14,8 @@ Design notes, measurements and the full plan are in [PROJECT.MD](PROJECT.MD).
 ## Features
 
 - **AniList discovery** — searches AnimeTosho, SeaDex, SubsPlease, nyaa.si, Yameii and ToonsHub (a Go port of [anitorrent](https://github.com/anh9000/anitorrent)), handles absolute vs per-season numbering, and auto-picks the best exact single-episode release (resolution → preferred groups → seeders → source accuracy).
-- **Torrent download** of only the episode file, with web-seed support, stall/no-peer watchdogs and resume after restart.
+- **Torrent download** of only the episode file, with web-seed support, stall/no-peer watchdogs and resume after restart. Batch (multi-episode) torrents work: each episode downloads only its own file, picked by episode number (season or absolute numbering), and episodes sharing a batch take turns on it.
+- **Dedup** — if the same file of the same torrent was already packaged under another anime/episode ID, the output is hard-linked from it (playlists and key re-issued for the new ID) instead of downloaded and encoded again.
 - **Analysis** — stream map, BD/WEB detection, subtitle extraction (ASS/SRT → WebVTT, signs vs dialogue), embedded fonts (deduplicated cache), audio language mapping.
 - **Intro/outro detection** — chapters, then cross-episode audio fingerprints (Chromaprint), then silence/black-frame heuristics.
 - **HLS output** — 1080p + 720p (never upscaled) and per-language audio renditions, segments cut at identical points in every rendition and on OP/ED boundaries, AES-128 encrypted, master playlist with measured bandwidth.
@@ -48,6 +49,25 @@ For the built-in web UI, set `SERVE_MEDIA=true`, point `HLS_KEY_URI_BASE` at thi
 
 ## Hosting on a VPS
 
+`deploy/` runs torClient in Docker (Ubuntu 24.04 + jellyfin-ffmpeg) behind [Caddy](https://caddyserver.com/), which adds HTTPS and a login in front of everything: UI, API, player, media and `/keys`.
+
+On a fresh Ubuntu 24.04 VPS:
+
+```bash
+git clone https://github.com/Vertixx01/selfhost.git
+cd selfhost/deploy
+sudo ./setup.sh
+```
+
+`setup.sh` installs Docker if needed, asks for the server's public IP (or domain), a user name and a password, writes `deploy/.env` (with a bcrypt hash of the password, never the password itself), creates `deploy/data/`, opens ports 80, 443 and the torrent port in `ufw` if it's active, and runs `docker compose up -d --build`. Then open `https://<your IP>/`.
+
+- **No domain:** with an IP address, Caddy signs the certificate with its own local CA, so the browser warns once. To remove the warning, trust Caddy's root certificate (`deploy/data/caddy/caddy/pki/authorities/local/root.crt`) on your devices, or point a domain (a free DuckDNS name works) at the VPS and set `SITE_ADDRESS` to it: Caddy then gets a Let's Encrypt certificate by itself.
+- **Data:** everything lives under `deploy/data/` (`output/` is the library, `db/` the job database, `keys/` the HLS keys). Back up `db/` and `keys/`; without the keys the library can't be played.
+- **Settings:** `deploy/.env` holds the VPS-sized torClient settings (4 vCPU defaults below). Once you know the disk size, set `MAX_STORAGE_GB` to about 80% of it. After editing, run `docker compose up -d`.
+- **Updating:** `git pull && docker compose up -d --build` in `deploy/`. Running jobs resume from their last checkpoint.
+- **Logs:** `docker compose logs -f torclient`.
+- **ffmpeg version:** the image installs `jellyfin-ffmpeg7`; build with `--build-arg FFMPEG_PKG=jellyfin-ffmpeg8` for the newer one.
+
 The defaults target a CPU-only VPS:
 
 | Setting | Default | Why |
@@ -61,7 +81,7 @@ The defaults target a CPU-only VPS:
 
 Sizing guide (per 24-min 1080p episode): download ~1–1.5 GB temporarily (deleted after packaging), ~550 MB final output, ~7 min encode on 4 vCPUs.
 
-Put a reverse proxy (nginx/Caddy) in front for TLS, and add authentication there for `/keys/...` and the UI: torClient itself has no user accounts. `GET /keys` is what makes the encryption meaningful — restrict who can fetch keys.
+Without Docker, put a reverse proxy in front yourself (TLS, and authentication for `/keys/...` and the UI): torClient has no user accounts of its own, and `GET /keys` is what makes the encryption meaningful, so restrict who can fetch keys. `deploy/Caddyfile` is a working example.
 
 ## Configuration
 

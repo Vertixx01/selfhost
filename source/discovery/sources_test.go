@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -139,6 +140,12 @@ func TestDiscoverWithFakeSites(t *testing.T) {
 	if res.Picked == nil || res.Picked.Hash != "e971d09c2578aefd982b7d4059e8bdd1fc3d2cf4" {
 		t.Fatalf("picked %+v", res.Picked)
 	}
+	if res.Picked.Batch {
+		t.Errorf("batch picked over single-episode releases: %s", res.Picked.Title)
+	}
+	if !slices.Equal(res.FileEpisodes, []int{res.Episode}) && (len(res.FileEpisodes) == 0 || res.FileEpisodes[0] != res.Episode) {
+		t.Errorf("file episodes %v for episode %d", res.FileEpisodes, res.Episode)
+	}
 	// One torrent, seen by three sources, merged.
 	for _, s := range []string{"animetosho", "subsplease", "nyaa"} {
 		if !contains(res.Picked.Sources, s) {
@@ -153,8 +160,8 @@ func TestDiscoverWithFakeSites(t *testing.T) {
 		case "cc00000000000000000000000000000000000003", "bb00000000000000000000000000000000000002":
 			t.Errorf("wrong season/episode kept: %s", c.Title)
 		case "dd00000000000000000000000000000000000004", "ff00000000000000000000000000000000000006":
-			if c.Pickable || !c.Batch {
-				t.Errorf("batch pickable: %+v", c)
+			if !c.Batch {
+				t.Errorf("batch not flagged: %+v", c)
 			}
 		}
 	}

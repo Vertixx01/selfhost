@@ -8,15 +8,22 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"torclient/source/discovery"
 	"torclient/source/torrent"
 )
 
 // ErrNoPlayableFile means the torrent has no video file that survives the
 // size and sample filters.
 var ErrNoPlayableFile = errors.New("torrent has no playable video file")
+
+// ErrEpisodeNotInTorrent: a multi-file torrent has no file named for the
+// wanted episode.
+var ErrEpisodeNotInTorrent = errors.New("episode not found in torrent")
 
 const DefaultMinFileSize = 50 << 20 // smaller files are samples / extras
 
@@ -66,6 +73,13 @@ type Result struct {
 // (retrying with backoff), and picks the main episode file. On error the
 // torrent is already dropped.
 func (r *Resolver) Resolve(ctx context.Context, magnet, rawDir string) (*Result, error) {
+	return r.ResolveEpisode(ctx, magnet, rawDir, nil)
+}
+
+// ResolveEpisode is Resolve for a torrent that may hold several episodes:
+// fileEps are the numbers the wanted episode's file name may carry (see
+// SelectEpisodeFile).
+func (r *Resolver) ResolveEpisode(ctx context.Context, magnet, rawDir string, fileEps []int) (*Result, error) {
 	var h *torrent.Handle
 	var lastErr error
 	for attempt := 1; attempt <= r.opts.Attempts; attempt++ {
@@ -99,7 +113,7 @@ func (r *Resolver) Resolve(ctx context.Context, magnet, rawDir string) (*Result,
 		return nil, fmt.Errorf("no metadata after %d attempts: %w", r.opts.Attempts, lastErr)
 	}
 
-	main, skipped, err := SelectMainFile(h.Files(), r.opts.MinFileSize)
+	main, skipped, err := SelectEpisodeFile(h.Files(), r.opts.MinFileSize, fileEps)
 	if err != nil {
 		h.Drop()
 		return nil, fmt.Errorf("%s: %w", h.Name(), err)
@@ -135,6 +149,67 @@ func SelectMainFile(files []torrent.File, minSize int64) (torrent.File, []torren
 		}
 	}
 	return files[best], skipped, nil
+}
+
+// SelectEpisodeFile picks the file for one episode. With no episode numbers,
+// or a torrent with a single playable video, it is SelectMainFile. Otherwise
+// (a batch) it takes the playable file whose name carries the first of eps
+// that any file carries: season numbering is listed before absolute.
+func SelectEpisodeFile(files []torrent.File, minSize int64, eps []int) (torrent.File, []torrent.File, error) {
+	var playable []torrent.File
+	for _, f := range files {
+		if videoExts[strings.ToLower(path.Ext(f.Path))] && f.Length >= minSize && !isSample(f.Path) {
+			playable = append(playable, f)
+		}
+	}
+	if len(eps) == 0 || len(playable) <= 1 {
+		return SelectMainFile(files, minSize)
+	}
+	for _, ep := range eps {
+		var hits []torrent.File
+		for _, f := range playable {
+			if fileHasEpisode(f.Path, ep) {
+				hits = append(hits, f)
+			}
+		}
+		if len(hits) == 0 {
+			continue
+		}
+		main, _, err := SelectMainFile(hits, minSize)
+		if err != nil {
+			return torrent.File{}, nil, err
+		}
+		skipped := make([]torrent.File, 0, len(files)-1)
+		for _, f := range files {
+			if f.Index != main.Index {
+				skipped = append(skipped, f)
+			}
+		}
+		return main, skipped, nil
+	}
+	names := make([]string, 0, 3)
+	for _, f := range playable[:min(3, len(playable))] {
+		names = append(names, path.Base(f.Path))
+	}
+	return torrent.File{}, nil, fmt.Errorf("%w: no file for episode %v among %d videos (e.g. %s)",
+		ErrEpisodeNotInTorrent, eps, len(playable), strings.Join(names, ", "))
+}
+
+// trailingGroupsRe strips "[1080p][ABCD1234]"-style tags from a file name's end.
+var trailingGroupsRe = regexp.MustCompile(`(\s*[\[(][^\])]*[\])])+\s*$`)
+
+// fileHasEpisode: the base name (without extension) names episode ep, either
+// as a release would ("- 05", "S01E05", "[05]") or as a bare trailing number
+// ("Show 05.mkv", "05.mkv").
+func fileHasEpisode(p string, ep int) bool {
+	base := path.Base(p)
+	base = strings.TrimSuffix(base, path.Ext(base))
+	if discovery.NameHasEpisode(base, ep) {
+		return true
+	}
+	bare := trailingGroupsRe.ReplaceAllString(base, "")
+	re := regexp.MustCompile(`(?i)(^|[\s._-])0*` + strconv.Itoa(ep) + `(v\d)?$`)
+	return re.MatchString(bare)
 }
 
 // isSample matches "sample" anywhere in the filename, or a Sample/ directory.

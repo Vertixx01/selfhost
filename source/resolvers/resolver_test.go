@@ -58,6 +58,55 @@ func TestSelectMainFile(t *testing.T) {
 	}
 }
 
+func TestSelectEpisodeFile(t *testing.T) {
+	const mb = 1 << 20
+	batch := []torrent.File{
+		{Index: 0, Path: "[Group] Show - 01 [1080p][AAAA1111].mkv", Length: 900 * mb},
+		{Index: 1, Path: "[Group] Show - 02 [1080p][BBBB2222].mkv", Length: 950 * mb},
+		{Index: 2, Path: "[Group] Show - 12 [1080p][CCCC3333].mkv", Length: 800 * mb},
+		{Index: 3, Path: "Extras/[Group] Show - NCOP [1080p].mkv", Length: 90 * mb},
+		{Index: 4, Path: "[Group] Show - 02 [1080p][BBBB2222].ass", Length: 1 * mb},
+	}
+	for _, c := range []struct {
+		eps  []int
+		want int
+	}{
+		{[]int{2}, 1},
+		{[]int{12}, 2},
+		{[]int{1}, 0},
+		{[]int{14, 2}, 1}, // season number not in the files: the absolute one is
+		{nil, 1},          // no numbers: largest video
+	} {
+		main, skipped, err := SelectEpisodeFile(batch, DefaultMinFileSize, c.eps)
+		if err != nil || main.Index != c.want || len(skipped) != len(batch)-1 {
+			t.Errorf("eps %v: got %d (%d skipped), %v; want %d", c.eps, main.Index, len(skipped), err, c.want)
+		}
+	}
+	if _, _, err := SelectEpisodeFile(batch, DefaultMinFileSize, []int{5}); !errors.Is(err, ErrEpisodeNotInTorrent) {
+		t.Errorf("missing episode: %v", err)
+	}
+
+	// Other naming styles.
+	for name, ep := range map[string]int{
+		"Show.S02E05.1080p.WEB-DL.mkv": 5,
+		"Show Season 2/05.mkv":         5,
+		"Show 05 [1080p].mkv":          5,
+		"Show - 05v2 [1080p].mkv":      5,
+		"Show E105.mkv":                105,
+	} {
+		files := []torrent.File{{Index: 0, Path: "other - 99.mkv", Length: 300 * mb}, {Index: 1, Path: name, Length: 300 * mb}}
+		if main, _, err := SelectEpisodeFile(files, DefaultMinFileSize, []int{ep}); err != nil || main.Index != 1 {
+			t.Errorf("%q ep %d: got %+v, %v", name, ep, main, err)
+		}
+	}
+
+	// A single-episode torrent is taken whatever its name says.
+	single := []torrent.File{{Index: 0, Path: "weird name.mkv", Length: 300 * mb}, {Index: 1, Path: "info.nfo", Length: 1}}
+	if main, _, err := SelectEpisodeFile(single, DefaultMinFileSize, []int{7}); err != nil || main.Index != 0 {
+		t.Errorf("single: %+v %v", main, err)
+	}
+}
+
 // seed builds a two-file torrent and seeds it from a local client. Returns a
 // magnet that points straight at the seeder (x.pe), the main file's bytes,
 // and the seeding client.

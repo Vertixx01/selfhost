@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -49,15 +50,7 @@ func (p *Pipeline) packageEpisode(ctx context.Context, job *models.Job, ep model
 			return err
 		}
 	}
-	jobMeta, err := json.MarshalIndent(map[string]any{
-		"job_id": job.ID, "anime_id": job.AnimeID, "title": job.Title,
-		"episode": map[string]any{"ep_id": ep.EpID, "title": ep.Title, "magnet_url": ep.MagnetURL,
-			"provider": ep.Provider, "priority": ep.Priority, "needs_poster": ep.NeedsPoster},
-	}, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(staging, "meta", "job.json"), jobMeta, 0o644); err != nil {
+	if err := writeJobMeta(filepath.Join(staging, "meta", "job.json"), job, ep); err != nil {
 		return err
 	}
 
@@ -97,6 +90,23 @@ func (p *Pipeline) packageEpisode(ctx context.Context, job *models.Job, ep model
 		log.Warn("remove raw dir", "err", err)
 	}
 	return nil
+}
+
+// writeJobMeta writes meta/job.json. It removes path first: in a reused
+// (hard-linked) output, writing through the link would change the original.
+func writeJobMeta(path string, job *models.Job, ep models.Episode) error {
+	b, err := json.MarshalIndent(map[string]any{
+		"job_id": job.ID, "anime_id": job.AnimeID, "title": job.Title,
+		"episode": map[string]any{"ep_id": ep.EpID, "title": ep.Title, "magnet_url": ep.MagnetURL,
+			"provider": ep.Provider, "priority": ep.Priority, "needs_poster": ep.NeedsPoster},
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
 }
 
 // verifyPackage checks that master.m3u8 parses and every playlist it names

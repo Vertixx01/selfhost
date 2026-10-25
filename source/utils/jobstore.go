@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"torclient/source/models"
@@ -75,9 +76,9 @@ func (s *JobStore) CreateJob(ctx context.Context, job models.Job, eps []models.E
 	}
 	for _, ep := range eps {
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO episodes (job_id, ep_id, title, magnet_url, priority, needs_poster, provider)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			job.ID, ep.EpID, ep.Title, ep.MagnetURL, ep.Priority, ep.NeedsPoster, ep.Provider)
+			`INSERT INTO episodes (job_id, ep_id, title, magnet_url, priority, needs_poster, provider, file_episodes)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			job.ID, ep.EpID, ep.Title, ep.MagnetURL, ep.Priority, ep.NeedsPoster, ep.Provider, joinInts(ep.FileEpisodes))
 		if err != nil {
 			return nil, false, fmt.Errorf("insert episode %s: %w", ep.EpID, err)
 		}
@@ -237,6 +238,47 @@ func (s *JobStore) SetInfohash(ctx context.Context, jobID, epID, infohash string
 	return s.updateEpisode(ctx, jobID, epID, `infohash = ?`, infohash)
 }
 
+// SetSource records the resolved infohash and the file chosen inside the
+// torrent (Stage 1); together they identify the source for dedup.
+func (s *JobStore) SetSource(ctx context.Context, jobID, epID, infohash, filePath string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE episodes SET infohash = ?, file_path = ?, updated_at = `+sqlNow+` WHERE job_id = ? AND ep_id = ?`,
+		infohash, filePath, jobID, epID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// PackagedFrom lists finished episodes (anime_id, ep_id) made from the same
+// torrent file, newest first, except animeID/epID itself.
+func (s *JobStore) PackagedFrom(ctx context.Context, infohash, filePath, animeID, epID string) ([][2]string, error) {
+	if infohash == "" || filePath == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT j.anime_id, e.ep_id FROM episodes e JOIN jobs j ON j.job_id = e.job_id
+		 WHERE e.infohash = ? AND e.file_path = ? AND e.status = 'done'
+		   AND NOT (j.anime_id = ? AND e.ep_id = ?)
+		 ORDER BY e.updated_at DESC`, infohash, filePath, animeID, epID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out [][2]string
+	for rows.Next() {
+		var a, e string
+		if err := rows.Scan(&a, &e); err != nil {
+			return nil, err
+		}
+		out = append(out, [2]string{a, e})
+	}
+	return out, rows.Err()
+}
+
 // UpdateProgress sets progress (0-100) without changing the stage.
 func (s *JobStore) UpdateProgress(ctx context.Context, jobID, epID string, progress float64) error {
 	return s.updateEpisode(ctx, jobID, epID, `progress = ?`, progress)
@@ -301,7 +343,7 @@ func (s *JobStore) QueueDepth(ctx context.Context) (map[models.EpisodeStatus]int
 const jobColumns = `job_id, anime_id, title, status, callback_url, episode_count, created_at, updated_at`
 
 const episodeColumns = `job_id, ep_id, title, magnet_url, infohash, priority, needs_poster, provider,
-	source_type, status, progress, error, size_bytes, output_path, created_at, updated_at`
+	source_type, status, progress, error, size_bytes, output_path, created_at, updated_at, file_episodes`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -316,13 +358,33 @@ func scanJob(r scanner) (*models.Job, error) {
 
 func scanEpisode(r scanner) (*models.Episode, error) {
 	var e models.Episode
+	var fileEps string
 	err := r.Scan(&e.JobID, &e.EpID, &e.Title, &e.MagnetURL, &e.Infohash, &e.Priority, &e.NeedsPoster,
 		&e.Provider, &e.SourceType, &e.Status, &e.Progress, &e.Error, &e.SizeBytes, &e.OutputPath,
-		&e.CreatedAt, &e.UpdatedAt)
+		&e.CreatedAt, &e.UpdatedAt, &fileEps)
 	if err != nil {
 		return nil, err
 	}
+	e.FileEpisodes = splitInts(fileEps)
 	return &e, nil
+}
+
+func joinInts(ns []int) string {
+	s := make([]string, len(ns))
+	for i, n := range ns {
+		s[i] = strconv.Itoa(n)
+	}
+	return strings.Join(s, ",")
+}
+
+func splitInts(s string) []int {
+	var out []int
+	for _, f := range strings.Split(s, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func placeholders(n int) string {

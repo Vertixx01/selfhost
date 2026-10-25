@@ -1,0 +1,6 @@
+# Files that run on the Linux VPS keep LF line endings even on a Windows checkout.
+*.sh text eol=lf
+Dockerfile text eol=lf
+deploy/Caddyfile text eol=lf
+deploy/*.yml text eol=lf
+deploy/.env.example text eol=lf

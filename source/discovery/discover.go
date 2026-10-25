@@ -75,6 +75,9 @@ type SearchResult struct {
 	Candidates []Candidate       `json:"candidates"`
 	Picked     *Candidate        `json:"picked"`
 	Errors     map[string]string `json:"source_errors,omitempty"`
+	// FileEpisodes: the numbers this episode's file may carry inside a batch
+	// torrent (season numbering first, then absolute).
+	FileEpisodes []int `json:"file_episodes,omitempty"`
 }
 
 // ErrNoRelease: nothing pickable was found for the episode.
@@ -134,7 +137,7 @@ func (d *Discoverer) SearchWith(ctx context.Context, show *Show, episode int, o 
 		q = d.AniList.withEpisodeCandidates(ctx, q)
 	}
 
-	res := &SearchResult{Show: show, Episode: episode, Mode: mode, Errors: map[string]string{}}
+	res := &SearchResult{Show: show, Episode: episode, Mode: mode, Errors: map[string]string{}, FileEpisodes: fileEpisodes(q)}
 	var mu sync.Mutex
 	var all []Result
 	var wg sync.WaitGroup
@@ -170,6 +173,25 @@ func (d *Discoverer) SearchWith(ctx context.Context, show *Show, episode int, o 
 		}
 	}
 	return res
+}
+
+// EpisodeNumbers is SearchResult.FileEpisodes without searching (for a
+// release the user chose).
+func (d *Discoverer) EpisodeNumbers(ctx context.Context, show *Show, episode int) []int {
+	if show.Episodes == 1 || show.Format == "MOVIE" {
+		return nil
+	}
+	return fileEpisodes(d.AniList.withEpisodeCandidates(ctx, Query{AnilistID: show.ID, Titles: show.Titles, Episode: episode}))
+}
+
+func fileEpisodes(q Query) []int {
+	if q.Episode < 0 {
+		return nil
+	}
+	if len(q.EpisodeCandidates) > 0 {
+		return q.EpisodeCandidates // starts with q.Episode
+	}
+	return []int{q.Episode}
 }
 
 // merge combines the same infohash from several sources: best accuracy and
@@ -235,9 +257,10 @@ func resolutionOf(title string) int {
 // older than this is probably unfetchable.
 const deadAfter = 7 * 24 * time.Hour
 
-// rank orders candidates for auto-pick. Only exact single-episode (or movie)
-// hits are pickable: the pipeline takes the largest video file of a torrent,
-// so a batch would yield the wrong episode. Order among pickables:
+// rank orders candidates for auto-pick. Exact single-episode (or movie) hits
+// and batches that cover the episode are pickable: the pipeline downloads
+// only the episode's file from a batch. Order among pickables:
+//  0. single-episode releases before batches
 //  1. preferred resolution, else the highest one ≤ it, else the rest
 //  2. preferred release group (config order)
 //  3. dub preference (Yameii first when asked for, last otherwise)
@@ -257,9 +280,7 @@ func rank(cs []Candidate, p Prefs, preferDub, preferH264 bool) []Candidate {
 			c.Match = "weak"
 		}
 		switch {
-		case c.Batch:
-			c.Why = "batch release (multi-episode torrents aren't supported yet)"
-		case c.Tier != 'A' || c.Accuracy == "low":
+		case c.Tier != 'A' && c.Tier != 'B', c.Accuracy == "low":
 			c.Why = "not an exact match for this episode"
 		case c.HasSeeders && c.Seeders == 0 && time.Since(c.Date) > deadAfter:
 			c.Why = "no seeders"
@@ -299,6 +320,9 @@ func rank(cs []Candidate, p Prefs, preferDub, preferH264 bool) []Candidate {
 		a, b := cs[i], cs[j]
 		if a.Pickable != b.Pickable {
 			return a.Pickable
+		}
+		if a.Batch != b.Batch {
+			return !a.Batch
 		}
 		if ra, rb := resRank(a.Title), resRank(b.Title); ra != rb {
 			return ra < rb

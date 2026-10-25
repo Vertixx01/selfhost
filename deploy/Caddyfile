@@ -1,0 +1,33 @@
+# HTTPS + login in front of torClient.
+#
+# SITE_ADDRESS is the VPS's public IP or a domain:
+#  - an IP: Caddy issues the certificate from its own local CA, so browsers
+#    warn until you trust that CA (see README, "Hosting on a VPS");
+#  - a domain pointing at the VPS: a real Let's Encrypt certificate, automatically.
+
+{$SITE_ADDRESS} {
+	# Liveness for uptime monitors; says nothing about the library.
+	handle /health {
+		reverse_proxy torclient:8080
+	}
+
+	# Everything else — UI, API, player, media and /keys — needs the login.
+	# Browsers send it with the player's playlist, segment and key requests
+	# too, since they're on the same origin.
+	handle {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_HASH}
+		}
+		reverse_proxy torclient:8080 {
+			# Downloads of .ts segments can be long; don't buffer them.
+			flush_interval -1
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		-Server
+	}
+}

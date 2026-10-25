@@ -222,14 +222,14 @@ func TestRank(t *testing.T) {
 		"[ToonsHub] Show - 05 1080p",             // 1080p, fewer seeders despite higher accuracy
 		"[Yameii] Show - 05 [English Dub] 1080p", // dub last within 1080p
 		"[SubsPlease] Show - 05 (720p)",          // lower resolution
-		"[Grp] Show 01-12 [1080p]",               // not pickable: batch
+		"[Grp] Show 01-12 [1080p]",               // batch: after every single-episode release
 		"[Dead] Show - 05 1080p",                 // not pickable: dead
 	}
 	if !slices.Equal(order(), want) {
 		t.Errorf("order:\n%v\nwant\n%v", order(), want)
 	}
-	if got[4].Pickable || got[4].Why == "" || got[5].Pickable {
-		t.Error("batch/dead marked pickable")
+	if !got[4].Pickable || !got[4].Batch || got[5].Pickable || got[5].Why == "" {
+		t.Error("covering batch should be pickable, dead release not")
 	}
 	got = rank(cands, Prefs{Resolution: "1080"}, true, false)
 	if got[0].Source != "yameii" {

@@ -1503,9 +1503,16 @@ Observed, not bugs but worth knowing: untagged audio is labelled Japanese (the "
 - **Audio labels:** untagged tracks take their language from the release name — "Dual Audio"/"JPN+ENG" → Japanese + English, "English Dub" with one track → English (`lang_from: "release"`).
 - **Matching:** a show with a one-word title ("ONE PIECE" is just {piece}; "one" is a stopword) now rejects any release whose show name adds a word outside the AniList titles ("Horimiya - Piece", "Koisuru One Piece", "One Piece Heroines"); `S00Exx` specials are rejected for episode searches. Codec detection fixed (its `\b` had been saved as backspace bytes).
 
+### Batch torrents, dedup, Docker (2026-10-25)
+
+- **Batch torrents:** discovery now auto-picks a batch that covers the episode (ranked after every single-episode release) and records `episodes.file_episodes` — the episode's numbers inside a batch, season numbering first, then absolute (migration 0003). The resolver (`SelectEpisodeFile`) takes the playable video whose name carries one of them ("- 05", "S02E05", "[05]", "E105", or a bare trailing "05"); a single-video torrent is taken as before; no match fails with `ErrEpisodeNotInTorrent`. Only that file is downloaded.
+- **Shared torrents:** the engine still runs one handle per infohash (two handles would fight over storage). An episode whose torrent is busy releases its torrent slot, waits (re-checking every 5s), and then fetches its own file; the overlap is only the pieces at file boundaries.
+- **Infohash dedup:** `episodes.file_path` (the chosen file inside the torrent) is stored with the infohash. Before downloading, if a `done` episode made from the same infohash + file has a valid output under another anime/episode ID, the new output is built from it: segments hard-linked (copied across filesystems), `.m3u8` key URIs rewritten, the key copied, `meta/job.json` written fresh (the link is removed first so the original isn't changed). Same anime/episode was already a cache hit.
+- **Docker:** `Dockerfile` (Go build → Ubuntu 24.04 + `jellyfin-ffmpeg7` from Jellyfin's apt repo + mkvtoolnix, non-root UID 1000, `TORRENT_STORAGE_DEFAULT_FILE_IO=classic` so there's no re-exec). `deploy/`: docker-compose (torClient + Caddy 2.10, bind mounts under `deploy/data/`, only Caddy and the torrent port published), Caddyfile (HTTPS: local CA for an IP, Let's Encrypt for a domain; basic auth on everything but `/health`), `.env.example` sized for 4 vCPU, `setup.sh` for a fresh Ubuntu 24.04 VPS. Not built locally (no Docker on the dev PC); the Jellyfin repo was checked to carry `jellyfin-ffmpeg7` and `-8` for noble.
+
 ### Phase 7 — Polish
-- [ ] **Infohash dedup:** look up `episodes.infohash`, recreate the existing output tree at the new path with per-file hardlinks
-- [ ] **Batch torrents:** pick the episode's file inside a multi-episode torrent; let episodes share one torrent
+- [x] **Infohash dedup:** look up `episodes.infohash` + `file_path`, recreate the existing output tree at the new path with per-file hardlinks
+- [x] **Batch torrents:** pick the episode's file inside a multi-episode torrent; let episodes share one torrent
 - [x] **Cache-hit fast path:** done in Phase 6 (pipeline start)
 - [x] **Graceful shutdown:** done in Phase 6
 - [x] **Retry endpoint:** `POST /job/{id}/retry` to requeue failed episodes from their checkpoint
@@ -1514,7 +1521,7 @@ Observed, not bugs but worth knowing: untagged audio is labelled Japanese (the "
 - [ ] **Structured logging audit:** ensure every stage logs begin/end/error with job_id
 - [ ] **Error handling review:** verify every edge case from §7 is covered
 - [ ] **Integration tests:** end-to-end test with small torrent
-- [ ] **Docker finalize:** Ubuntu image with jellyfin-ffmpeg + mkvtoolnix, non-root user
+- [x] **Docker finalize:** Ubuntu image with jellyfin-ffmpeg + mkvtoolnix, non-root user (not yet built on a real VPS)
 - [x] **README:** setup instructions, API docs, architecture overview
 
 ---

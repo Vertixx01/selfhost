@@ -8,3 +8,5 @@
 /torClient.exe
 /testrun/
 /.env
+/deploy/.env
+/deploy/data/

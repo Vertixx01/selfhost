@@ -666,3 +666,7 @@ func hitsExclusion(title string, exclusions []string) bool {
 	}
 	return false
 }
+
+// NameHasEpisode reports whether a release or file name names episode ep
+// ("- 05", "E05", "[05]", ...). Used to find an episode inside a batch.
+func NameHasEpisode(name string, ep int) bool { return titleHasEpisode(name, ep) }

@@ -53,6 +53,7 @@ type Pipeline struct {
 	ffmpegSlots  chan struct{} // MAX_FFMPEG_WORKERS: CPU transcodes (nil = none)
 	gpuSlots     chan struct{} // GPU_WORKERS: NVENC transcodes (nil = none)
 	series       *seriesRunner
+	busyRetry    time.Duration // re-check interval while a batch torrent is in use
 
 	runMu   sync.Mutex
 	running map[string]context.CancelCauseFunc // "job/ep" → cancel of its Run
@@ -68,6 +69,7 @@ func New(cfg Config, store *utils.JobStore, fonts *utils.FontCache, resolver *re
 		gpuSlots:     slots(cfg.GPUWorkers),
 		series:       newSeriesRunner(),
 		running:      map[string]context.CancelCauseFunc{},
+		busyRetry:    5 * time.Second,
 	}
 }
 
@@ -206,7 +208,9 @@ func (p *Pipeline) process(ctx context.Context, ep models.Episode, log *slog.Log
 			return err
 		}
 		t0 := time.Now()
-		if err := stages[i](ctx, job, ep, ps, log); err != nil {
+		if err := stages[i](ctx, job, ep, ps, log); errors.Is(err, errReused) {
+			break // output linked from an identical source; nothing left to do
+		} else if err != nil {
 			return fmt.Errorf("%s: %w", stageOrder[i], err)
 		}
 		log.Info("stage finished", "stage", stageOrder[i], "took", time.Since(t0).Round(time.Millisecond))
@@ -278,17 +282,46 @@ func (p *Pipeline) recordOutput(ctx context.Context, ep models.Episode, ps paths
 
 // download: Stage 1 + 2 under a torrent slot.
 func (p *Pipeline) download(ctx context.Context, job *models.Job, ep models.Episode, ps paths, log *slog.Logger) error {
-	if err := acquire(ctx, p.torrentSlots); err != nil {
-		return err
+	// Episodes from one batch torrent share its infohash, and the engine
+	// runs one handle per infohash: the later ones wait their turn (without
+	// holding a torrent slot), then fetch only their own file.
+	for waiting := false; ; waiting = true {
+		if err := acquire(ctx, p.torrentSlots); err != nil {
+			return err
+		}
+		res, err := p.resolver.ResolveEpisode(ctx, ep.MagnetURL, ps.RawDir, ep.FileEpisodes)
+		if err == nil {
+			defer release(p.torrentSlots)
+			return p.fetch(ctx, job, ep, ps, res, log)
+		}
+		release(p.torrentSlots)
+		if !errors.Is(err, torrent.ErrBusy) {
+			return err
+		}
+		if !waiting {
+			log.Info("torrent in use by another episode (batch); waiting for it")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(p.busyRetry):
+		}
 	}
-	defer release(p.torrentSlots)
+}
 
-	res, err := p.resolver.Resolve(ctx, ep.MagnetURL, ps.RawDir)
-	if err != nil {
+// fetch: Stage 2 for a resolved torrent (consumes res.Handle).
+func (p *Pipeline) fetch(ctx context.Context, job *models.Job, ep models.Episode, ps paths, res *resolvers.Result, log *slog.Logger) error {
+	if err := p.store.SetSource(ctx, ep.JobID, ep.EpID, res.Infohash, res.File.Path); err != nil {
+		res.Handle.Drop()
 		return err
 	}
-	if err := p.store.SetInfohash(ctx, ep.JobID, ep.EpID, res.Infohash); err != nil {
+	// The same file already packaged under another anime/episode ID: link
+	// that output instead of downloading and encoding it again.
+	if reused, err := p.reuseOutput(ctx, job, ep, ps, res.Infohash, res.File.Path, log); err != nil || reused {
 		res.Handle.Drop()
+		if err == nil {
+			err = errReused
+		}
 		return err
 	}
 	// MAX_STORAGE_GB: the download plus its transcode output must fit.

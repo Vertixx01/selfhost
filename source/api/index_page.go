@@ -139,7 +139,7 @@ function renderResults() {
     cands.slice(0, 20).forEach((c, i) => {
       const tr = el("tr", c.pickable ? null : "off");
       const td0 = el("td"), r = el("input"); r.type = "radio"; r.name = "ep" + episode; r.value = i;
-      r.disabled = c.batch; r.checked = result.picked && c.infohash === result.picked.infohash;
+      r.checked = result.picked && c.infohash === result.picked.infohash;
       td0.append(r); tr.append(td0);
       const tt = el("td", "t", c.title);
       if (c.match !== "exact") tt.append(el("span", "tag", c.match));
@@ -178,7 +178,7 @@ function downloadSelected() {
     const r = document.querySelector('input[name="ep' + episode + '"]:checked');
     if (!r) continue;
     const c = result.candidates[+r.value];
-    picks[String(episode)] = {magnet: c.magnet, title: c.title, source: c.sources[0] || ""};
+    picks[String(episode)] = {magnet: c.magnet, title: c.title, source: c.sources[0] || "", batch: c.batch};
   }
   if (!Object.keys(picks).length) return say("Select at least one release.", true);
   lastSearch.eps = lastSearch.eps.filter(e => picks[String(e.episode)]);

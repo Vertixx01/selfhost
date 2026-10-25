@@ -1,0 +1,14 @@
+.git
+.env
+.claude
+testrun
+work
+output
+torrents
+data
+fonts
+keys
+deploy/data
+torClient
+torClient.exe
+*.exe

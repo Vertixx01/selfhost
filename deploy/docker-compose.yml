@@ -1,0 +1,46 @@
+# torClient + Caddy for a VPS. From this directory:
+#   cp .env.example .env    # then set SITE_ADDRESS, AUTH_USER, AUTH_HASH
+#   docker compose up -d --build
+# Everything torClient stores lives under ./data (bind mounts).
+
+services:
+  torclient:
+    build:
+      context: ..
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Players fetch keys through Caddy, from the same origin as the page.
+      HLS_KEY_URI_BASE: https://${SITE_ADDRESS}/keys
+      KEY_CORS_ORIGIN: https://${SITE_ADDRESS}
+      SERVE_MEDIA: "true"
+    volumes:
+      - ./data/work:/srv/torclient/work
+      - ./data/output:/srv/torclient/output
+      - ./data/torrents:/srv/torclient/torrents
+      - ./data/db:/srv/torclient/data
+      - ./data/fonts:/srv/torclient/fonts
+      - ./data/keys:/srv/torclient/keys
+    ports:
+      # BitTorrent peers. The HTTP port is not published: only Caddy reaches it.
+      - "${TORRENT_PORT:-42069}:${TORRENT_PORT:-42069}/tcp"
+      - "${TORRENT_PORT:-42069}:${TORRENT_PORT:-42069}/udp"
+    stop_grace_period: 30s
+
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    depends_on:
+      - torclient
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+      AUTH_USER: ${AUTH_USER}
+      AUTH_HASH: ${AUTH_HASH}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config

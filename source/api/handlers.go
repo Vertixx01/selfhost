@@ -127,12 +127,13 @@ func validateJob(job models.Job, reqEps []models.NewEpisodeRequest) ([]models.Ep
 			return nil, fmt.Errorf("episodes[%d].magnet_url must start with %s", i, magnetPrefix)
 		}
 		eps = append(eps, models.Episode{
-			EpID:        e.EpID,
-			Title:       e.Title,
-			MagnetURL:   e.MagnetURL,
-			Priority:    e.Priority,
-			NeedsPoster: e.NeedsPoster,
-			Provider:    e.Provider,
+			EpID:         e.EpID,
+			Title:        e.Title,
+			MagnetURL:    e.MagnetURL,
+			Priority:     e.Priority,
+			NeedsPoster:  e.NeedsPoster,
+			Provider:     e.Provider,
+			FileEpisodes: e.FileEpisodes,
 		})
 	}
 	return eps, nil

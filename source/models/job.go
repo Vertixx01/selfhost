@@ -51,22 +51,25 @@ type Job struct {
 
 // Episode is one row of the episodes table.
 type Episode struct {
-	JobID       string        `json:"-"`
-	EpID        string        `json:"ep_id"`
-	Title       string        `json:"title"`
-	MagnetURL   string        `json:"magnet_url"`
-	Infohash    string        `json:"infohash,omitempty"`
-	Priority    int           `json:"priority"`
-	NeedsPoster bool          `json:"needs_poster"`
-	Provider    string        `json:"provider"`
-	SourceType  string        `json:"source_type,omitempty"`
-	Status      EpisodeStatus `json:"status"`
-	Progress    float64       `json:"progress"`
-	Error       string        `json:"error,omitempty"`
-	SizeBytes   int64         `json:"size_bytes"`
-	OutputPath  string        `json:"output_path"`
-	CreatedAt   string        `json:"-"`
-	UpdatedAt   string        `json:"-"`
+	JobID       string `json:"-"`
+	EpID        string `json:"ep_id"`
+	Title       string `json:"title"`
+	MagnetURL   string `json:"magnet_url"`
+	Infohash    string `json:"infohash,omitempty"`
+	Priority    int    `json:"priority"`
+	NeedsPoster bool   `json:"needs_poster"`
+	Provider    string `json:"provider"`
+	// FileEpisodes picks the file inside a batch torrent by episode number
+	// (season and absolute numbering); empty = the largest video file.
+	FileEpisodes []int         `json:"file_episodes,omitempty"`
+	SourceType   string        `json:"source_type,omitempty"`
+	Status       EpisodeStatus `json:"status"`
+	Progress     float64       `json:"progress"`
+	Error        string        `json:"error,omitempty"`
+	SizeBytes    int64         `json:"size_bytes"`
+	OutputPath   string        `json:"output_path"`
+	CreatedAt    string        `json:"-"`
+	UpdatedAt    string        `json:"-"`
 }
 
 // NewJobRequest is the body of POST /job.
@@ -93,4 +96,7 @@ type NewEpisodeRequest struct {
 	Priority    int    `json:"priority"`
 	NeedsPoster bool   `json:"needs_poster"`
 	Provider    string `json:"provider"`
+	// FileEpisodes: for a batch torrent, the episode numbers its file names
+	// may use for this episode (e.g. [5, 29]).
+	FileEpisodes []int `json:"file_episodes,omitempty"`
 }

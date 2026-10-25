@@ -287,6 +287,35 @@ func TestPipelineEndToEnd(t *testing.T) {
 		}
 	})
 
+	t.Run("same torrent under another ID is reused", func(t *testing.T) {
+		// The seeder is gone (previous subtest) and metadata comes from the
+		// .torrent cache, so finishing proves nothing was downloaded.
+		h.submit("j5", "show-alt", "E1", magnet)
+		job, _ := h.runPool("j5")
+		alt := h.layout.OutputDir("show-alt", "E1")
+		if job.Status != models.JobCompleted || job.Episodes[0].OutputPath != filepath.ToSlash(alt) || !validMaster(alt) {
+			t.Fatalf("reuse: job %+v", job.Episodes[0])
+		}
+		pl, _ := os.ReadFile(filepath.Join(alt, "720p", "stream.m3u8"))
+		if !strings.Contains(string(pl), `URI="http://keys.test/keys/show-alt/E1.key"`) || strings.Contains(string(pl), "S01E01.key") {
+			t.Errorf("reused playlist key URI:\n%s", pl)
+		}
+		if k1, _ := os.ReadFile(h.layout.KeyFile("show", "S01E01")); len(k1) != 16 {
+			t.Error("source key missing")
+		} else if k2, _ := os.ReadFile(h.layout.KeyFile("show-alt", "E1")); string(k1) != string(k2) {
+			t.Error("reused episode's key differs from the source's")
+		}
+		meta, _ := os.ReadFile(filepath.Join(alt, "meta", "job.json"))
+		orig, _ := os.ReadFile(filepath.Join(out, "meta", "job.json"))
+		if !strings.Contains(string(meta), `"show-alt"`) || strings.Contains(string(orig), `"show-alt"`) {
+			t.Errorf("job.json: reused %s / original %s", meta, orig)
+		}
+		origPl, _ := os.ReadFile(filepath.Join(out, "720p", "stream.m3u8"))
+		if !strings.Contains(string(origPl), "show/S01E01.key") {
+			t.Error("rewriting the copy changed the original playlist")
+		}
+	})
+
 	t.Run("bad magnet fails the job", func(t *testing.T) {
 		h.submit("j3", "other", "E01", "magnet:?xt=urn:btih:"+strings.Repeat("ab", 20))
 		job, cb := h.runPool("j3")
@@ -339,6 +368,55 @@ func TestPipelineEndToEnd(t *testing.T) {
 			t.Errorf("second sweep removed %d", n)
 		}
 	})
+}
+
+// TestBatchTorrent: two episodes of one job come from the same two-file
+// batch torrent. Each must get its own file, and the second must wait for the
+// first instead of failing on the busy infohash.
+func TestBatchTorrent(t *testing.T) {
+	h := newHarness(t)
+	h.pipe.busyRetry = 100 * time.Millisecond
+	srcDir := filepath.Join(t.TempDir(), "[Grp] Show (01-02)")
+	ep1 := makeEpisode(t, h.ff, srcDir)
+	// Episode 2 is a 20s cut of episode 1, so the outputs tell them apart.
+	ep2 := filepath.Join(srcDir, "[Grp] Show - 02.mkv")
+	if b, err := exec.Command(h.ff, "-hide_banner", "-loglevel", "error", "-i", ep1, "-t", "20", "-map", "0", "-c", "copy", ep2).CombinedOutput(); err != nil {
+		t.Fatalf("cut episode 2: %v\n%s", err, b)
+	}
+	magnet, _ := seed(t, srcDir)
+
+	_, _, err := h.store.CreateJob(context.Background(),
+		models.Job{ID: "b1", AnimeID: "show", Title: "Show", CallbackURL: os.Getenv("TORCLIENT_TEST_CALLBACK")},
+		[]models.Episode{{EpID: "ep1", MagnetURL: magnet, FileEpisodes: []int{1}}, {EpID: "ep2", MagnetURL: magnet, FileEpisodes: []int{2}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := h.runPool("b1")
+	if job.Status != models.JobCompleted {
+		t.Fatalf("job %s: %+v", job.Status, job.Episodes)
+	}
+	for ep, want := range map[string]float64{"ep1": 30, "ep2": 20} {
+		if got := playlistSeconds(t, filepath.Join(h.layout.OutputDir("show", ep), "720p", "stream.m3u8")); got < want-1 || got > want+1 {
+			t.Errorf("%s: %.1fs of video, want %.0fs (wrong file from the batch?)", ep, got, want)
+		}
+	}
+}
+
+func playlistSeconds(t *testing.T, path string) float64 {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total float64
+	for _, line := range strings.Split(string(b), "\n") {
+		if d, ok := strings.CutPrefix(strings.TrimSpace(line), "#EXTINF:"); ok {
+			var f float64
+			fmt.Sscanf(strings.TrimSuffix(d, ","), "%g", &f)
+			total += f
+		}
+	}
+	return total
 }
 
 func TestPackageVerification(t *testing.T) {
